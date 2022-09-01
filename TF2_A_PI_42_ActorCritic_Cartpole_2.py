@@ -1,57 +1,97 @@
+# IMPORTING LIBRARIES
+
 import sys
 IN_COLAB = "google.colab" in sys.modules
 
-import numpy as np
-import tensorflow as tf
 import gym
+import numpy as np
+
+import tensorflow as tf
 import tensorflow_probability as tfp
-import tensorflow.keras.losses as kls
+from tensorflow.keras import optimizers, losses
+from tensorflow.keras import Model
 
-seed = 1234
-env_name = "CartPole-v0"
-# set environment
-env = gym.make(env_name)
-env.seed(seed)     # reproducible, general Policy gradient has high variance
+from IPython.display import clear_output
 
-state_size = env.observation_space.shape[0]
-action_size = env.action_space.n
-hidden_size = 64
-
-class Actor(tf.keras.Model):
-    def __init__(self):
-        super(Actor, self).__init__()    
-        self.fc1 = tf.keras.layers.Dense(hidden_size,activation='relu')
-        self.fc2 = tf.keras.layers.Dense(hidden_size,activation='relu')
-        self.out = tf.keras.layers.Dense(action_size,activation='softmax')
+class Actor(Model):
+    def __init__(self, state_size: int, action_size: int, 
+    ):
+        """Initialization."""
+        super(Actor, self).__init__()
+        
+        self.state_size = state_size
+        self.action_size = action_size
+        # set the hidden layers
+        self.layer1 = tf.keras.layers.Dense(hidden_size, activation='relu')
+        self.layer2 = tf.keras.layers.Dense(hidden_size, activation='relu')
+        self.policy = tf.keras.layers.Dense(self.action_size,activation='softmax')
 
     def call(self, state):
-        x = self.fc1(state)
-        x = self.fc2(x)
-        mu = self.out(x)
-        return mu
+        layer1 = self.layer1(state)
+        layer2 = self.layer2(layer1)
+        policy = self.policy(layer2)
+        return policy
     
-class CriticV(tf.keras.Model):
-    def __init__(self):
+class CriticV(Model):
+    def __init__(
+        self, 
+        state_size: int, 
+    ):
+        """Initialize."""
         super(CriticV, self).__init__()
-        self.fc1 = tf.keras.layers.Dense(hidden_size,activation='relu')
-        self.fc2 = tf.keras.layers.Dense(hidden_size,activation='relu')
-        self.v = tf.keras.layers.Dense(1, activation = None)
+        self.layer1 = tf.keras.layers.Dense(hidden_size, activation='relu')
+        self.layer2 = tf.keras.layers.Dense(hidden_size, activation='relu')
+        self.value = tf.keras.layers.Dense(1, activation = None)
 
     def call(self, state):
-        x = self.fc1(state)
-        x = self.fc2(x)
-        v = self.v(x)
-        return v
+        layer1 = self.layer1(state)
+        layer2 = self.layer2(layer1)
+        value = self.value(layer2)
+        return value
 
-class Agent():
-    def __init__(self):
-        self.actor = Actor()
-        self.critic = CriticV()
-        self.gamma = 0.99
+class DQNAgent:
+    """A2CAgent interacting with environment.
+        
+    Attributes:
+        env (gym.Env): openAI Gym environment
+        gamma (float): discount factor
+        entropy_weight (float): rate of weighting entropy into the loss function
+        actor (tf.keras.Model): target actor model to select actions
+        critic (tf.keras.Model): critic model to predict state values
+        actor_optimizer (optim.Optimizer) : optimizer of actor
+        critic_optimizer (optim.Optimizer) : optimizer of critic
+        transition (list): temporory storage for the recent transition
+        is_test (bool): flag to show the current mode (train / test)
+    """
+
+    def __init__(
+        self, 
+        env: gym.Env,
+    ):
+        """Initialization.
+        
+        Args:
+            env (gym.Env): openAI Gym environment
+            gamma (float): discount factor
+        """
+        
+        # CREATING THE Q-Network
+        self.env = env
+        
+        self.state_size = self.env.observation_space.shape[0]
+        self.action_size = self.env.action_space.n
+        
+        self.actor_lr = 7e-3
+        self.critic_lr = 7e-3
+        self.gamma = 0.99    # discount rate
+        self.actor = Actor(self.state_size, self.action_size
+                          )
+        self.critic = CriticV(self.state_size
+                          )
         # self.a_opt = tf.keras.optimizers.RMSprop(learning_rate=1e-5)
         # self.c_opt = tf.keras.optimizers.RMSprop(learning_rate=1e-5)
-        self.a_opt = tf.keras.optimizers.Adam(learning_rate=7e-3)
-        self.c_opt = tf.keras.optimizers.Adam(learning_rate=7e-3)
+        self.a_opt = tf.keras.optimizers.Adam(learning_rate=self.actor_lr)
+        self.c_opt = tf.keras.optimizers.Adam(learning_rate=self.critic_lr)
         self.log_prob = None
     
     def get_action(self, state):
@@ -93,28 +133,56 @@ class Agent():
         
         return actor_loss, critic_loss
 
+seed = 2000
+# CREATING THE ENVIRONMENT
+env_name = "CartPole-v0"
+env = gym.make(env_name)
+env.seed(seed)     # reproducible, general Policy gradient has high variance
+
+# INITIALIZING THE Q-PARAMETERS
+hidden_size = 32
+max_episodes = 300  # Set total number of episodes to train agent on.
+
+# train
+agent = DQNAgent(
+    env, 
+#     memory_size, 
+#     batch_size, 
+#     epsilon_decay,
+)
+
 if __name__ == "__main__":
-    tf.random.set_seed(336699)
-    agent = Agent()
+    tf.random.set_seed(2000)
+    # 2.5 TRAINING LOOP
+    #List to contain all the rewards of all the episodes given to the agent
+    scores = []
     
-    max_episodes = 400
-
+    # EACH EPISODE    
     for episode in range(max_episodes):
-
-        state = env.reset()
-        done = False
-        total_reward = 0
-
+        ## Reset environment and get first new observation
+        state = agent.env.reset()
+        episode_reward = 0
+        done = False  # has the enviroment finished?
+        
+            
+        # EACH TIME STEP    
         while not done:
-            #env.render()
+        # for step in range(max_steps):  # step index, maximum step is 200
             action = agent.get_action(state)
-            next_state, reward, done, _ = env.step(action)
+            
+            # TAKING ACTION
+            next_state, reward, done, _ = agent.env.step(action)
             aloss, closs = agent.train_step(state, action, reward, next_state, done)
             
+            # Our new state is state
             state = next_state
-            total_reward += reward
+            
+            episode_reward += reward
 
+            # if episode ends
             if done:
-                #print("total step for this episord are {}".format(t))
-                print("total reward after {} steps is {}".format(episode+1, total_reward))
+                scores.append(episode_reward)
+                print("Episode " + str(episode+1) + ": " + str(episode_reward))
+                
+                break
 
