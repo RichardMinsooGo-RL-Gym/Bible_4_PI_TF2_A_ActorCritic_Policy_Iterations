@@ -1,24 +1,22 @@
-import tensorflow as tf
-import matplotlib.pyplot as plt
-import numpy as np
+! pip install gym[box2d]
+
+# IMPORTING LIBRARIES
+
+import sys
+IN_COLAB = "google.colab" in sys.modules
+
 import gym
+import numpy as np
+
+import tensorflow as tf
+from tensorflow.keras import Model
+
+from IPython.display import clear_output
 from tensorflow.keras.models import load_model
-!pip3 install box2d-py
 
-print(tf.config.list_physical_devices('GPU'))
+# !pip3 install box2d-py
 
-env= gym.make("LunarLanderContinuous-v2")
-state_low = env.observation_space.low
-state_high = env.observation_space.high
-action_low = env.action_space.low 
-action_high = env.action_space.high
-print(state_low)
-print(state_high)
-print(action_low)
-print(action_high)
-
-
-class RBuffer():
+class ReplayBuffer():
     def __init__(self, maxsize, statedim, naction):
         self.cnt = 0
         self.maxsize = maxsize
@@ -28,7 +26,7 @@ class RBuffer():
         self.next_state_memory = np.zeros((maxsize, *statedim), dtype=np.float32)
         self.done_memory = np.zeros((maxsize,), dtype= np.bool)
 
-    def storexp(self, state, next_state, action, done, reward):
+    def storexp(self, state, action, reward, next_state, done):
         index = self.cnt % self.maxsize
         self.state_memory[index] = state
         self.action_memory[index] = action
@@ -47,75 +45,122 @@ class RBuffer():
         dones = self.done_memory[batch]
         return states, next_states, rewards, actions, dones
 
-class Critic(tf.keras.Model):
-    def __init__(self):
-        super(Critic, self).__init__()
-        self.f1 = tf.keras.layers.Dense(512, activation='relu')
-        self.f2 = tf.keras.layers.Dense(512, activation='relu')
-        self.v =  tf.keras.layers.Dense(1, activation=None)
-
-    def call(self, inputstate, action):
-        x = self.f1(tf.concat([inputstate, action], axis=1))
-        x = self.f2(x)
-        x = self.v(x)
-        return x
-
-
-class Actor(tf.keras.Model):
-    def __init__(self, no_action):
-        super(Actor, self).__init__()    
-        self.f1 = tf.keras.layers.Dense(512, activation='relu')
-        self.f2 = tf.keras.layers.Dense(512, activation='relu')
-        self.mu =  tf.keras.layers.Dense(no_action, activation='tanh')
+class Actor(Model):
+    def __init__(self, state_size: int, action_size: int, 
+    ):
+        """Initialization."""
+        super(Actor, self).__init__()
+        
+        self.state_size = state_size
+        self.action_size = action_size
+        # set the hidden layers
+        self.layer1 = tf.keras.layers.Dense(hidden_size, activation='relu')
+        self.layer2 = tf.keras.layers.Dense(hidden_size, activation='relu')
+        self.policy =  tf.keras.layers.Dense(action_size, activation='tanh')
 
     def call(self, state):
-        x = self.f1(state)
-        x = self.f2(x)
-        x = self.mu(x)  
-        return x
+        layer1 = self.layer1(state)
+        layer2 = self.layer2(layer1)
+        policy = self.policy(layer2)
+        return policy
+    
+class CriticQ(Model):
+    def __init__(
+        self, 
+        state_size: int, 
+    ):
+        """Initialize."""
+        super(CriticQ, self).__init__()
+        self.layer1 = tf.keras.layers.Dense(hidden_size, activation='relu')
+        self.layer2 = tf.keras.layers.Dense(hidden_size, activation='relu')
+        self.value = tf.keras.layers.Dense(1, activation = None)
+
+    def call(self, state, action):
+        layer1 = self.layer1(tf.concat([state, action], axis=1))
+        layer2 = self.layer2(layer1)
+        value = self.value(layer2)
+        return value
 
 class Agent():
-    def __init__(self, n_action= len(env.action_space.high)):
-        self.actor_main = Actor(n_action)
-        self.actor_target = Actor(n_action)
-        self.critic_main = Critic()
-        self.critic_main2 = Critic()
-        self.critic_target = Critic()
-        self.critic_target2 = Critic()
+    """
+        
+    Attributes:
+        env (gym.Env): openAI Gym environment
+        gamma (float): discount factor
+        entropy_weight (float): rate of weighting entropy into the loss function
+        actor (tf.keras.Model): target actor model to select actions
+        critic (tf.keras.Model): critic model to predict state values
+        actor_optimizer (optim.Optimizer) : optimizer of actor
+        critic_optimizer (optim.Optimizer) : optimizer of critic
+        transition (list): temporory storage for the recent transition
+        is_test (bool): flag to show the current mode (train / test)
+    """
+
+    def __init__(
+        self, 
+        env: gym.Env,
+    ):
+        """Initialization.
+        
+        Args:
+            env (gym.Env): openAI Gym environment
+            gamma (float): discount factor
+        """
+        
+        # CREATING THE Q-Network
+        self.env = env
+        
+        self.state_size = self.env.observation_space.shape
+        self.action_size = len(env.action_space.high)
+        
+        self.actor_lr = 7e-3
+        self.critic_lr = 7e-3
+        self.gamma = 0.99    # discount rate
+        self.actor = Actor(self.state_size, self.action_size
+                          )
+        self.actor_target = Actor(self.state_size, self.action_size
+                          )
+        self.critic1 = CriticQ(self.state_size
+                          )
+        self.critic2 = CriticQ(self.state_size
+                          )
+        self.critic_target1 = CriticQ(self.state_size
+                          )
+        self.critic_target2 = CriticQ(self.state_size
+                          )
         self.batch_size = 64
-        self.n_actions = len(env.action_space.high)
-        self.a_opt = tf.keras.optimizers.Adam(0.001)
+
         # self.actor_target = tf.keras.optimizers.Adam(.001)
-        self.c_opt1 = tf.keras.optimizers.Adam(0.002)
-        self.c_opt2 = tf.keras.optimizers.Adam(0.002)
-        # self.critic_target = tf.keras.optimizers.Adam(.002)
-        self.memory = RBuffer(1_00_000, env.observation_space.shape, len(env.action_space.high))
+        # self.critic_target1 = tf.keras.optimizers.Adam(.002)
+        
+        self.a_opt = tf.keras.optimizers.Adam(learning_rate=self.actor_lr)
+        self.c_opt1 = tf.keras.optimizers.Adam(learning_rate=self.critic_lr)
+        self.c_opt2 = tf.keras.optimizers.Adam(learning_rate=self.critic_lr)
+        self.memory = ReplayBuffer(1_00_000, env.observation_space.shape, len(env.action_space.high))
         self.trainstep = 0
-        #self.replace = 5
-        self.gamma = 0.99
+        self.update_freq = 5
         self.min_action = env.action_space.low[0]
         self.max_action = env.action_space.high[0]
         self.actor_update_steps = 2
         self.warmup = 200
         self.actor_target.compile(optimizer=self.a_opt)
-        self.critic_target.compile(optimizer=self.c_opt1)
+        self.critic_target1.compile(optimizer=self.c_opt1)
         self.critic_target2.compile(optimizer=self.c_opt2)
         self.tau = 0.005
+        self.update_target()
     
-
-    def act(self, state, evaluate=False):
+    def get_action(self, state, evaluate=False):
         if self.trainstep > self.warmup:
             evaluate = True
         state = tf.convert_to_tensor([state], dtype=tf.float32)
-        actions = self.actor_main(state)
+        actions = self.actor(state)
         if not evaluate:
-            actions += tf.random.normal(shape=[self.n_actions], mean=0.0, stddev=0.1)
+            actions += tf.random.normal(shape=[self.action_size], mean=0.0, stddev=0.1)
 
         actions = self.max_action * (tf.clip_by_value(actions, self.min_action, self.max_action))
         #print(actions)
         return actions[0]
-
-
+    
     def savexp(self,state, next_state, action, done, reward):
         self.memory.storexp(state, next_state, action, done, reward)
 
@@ -126,112 +171,135 @@ class Agent():
 
         weights1 = []
         targets1 = self.actor_target.weights
-        for i, weight in enumerate(self.actor_main.weights):
+        for i, weight in enumerate(self.actor.weights):
             weights1.append(weight * tau + targets1[i]*(1-tau))
         self.actor_target.set_weights(weights1)
 
         weights2 = []
-        targets2 = self.critic_target.weights
-        for i, weight in enumerate(self.critic_main.weights):
+        targets2 = self.critic_target1.weights
+        for i, weight in enumerate(self.critic1.weights):
             weights2.append(weight * tau + targets2[i]*(1-tau))
-        self.critic_target.set_weights(weights2)
+        self.critic_target1.set_weights(weights2)
 
 
         weights3 = []
         targets3 = self.critic_target2.weights
-        for i, weight in enumerate(self.critic_main2.weights):
+        for i, weight in enumerate(self.critic2.weights):
             weights3.append(weight * tau + targets3[i]*(1-tau))
         self.critic_target2.set_weights(weights3)
 
-  
-    def train(self):
+    def train_step(self):
         if self.memory.cnt < self.batch_size:
             return 
 
         states, next_states, rewards, actions, dones = self.memory.sample(self.batch_size)
 
-        states = tf.convert_to_tensor(states, dtype= tf.float32)
+        states      = tf.convert_to_tensor(states, dtype= tf.float32)
+        actions     = tf.convert_to_tensor(actions, dtype= tf.float32)
+        rewards     = tf.convert_to_tensor(rewards, dtype= tf.float32)
         next_states = tf.convert_to_tensor(next_states, dtype= tf.float32)
-        rewards = tf.convert_to_tensor(rewards, dtype= tf.float32)
-        actions = tf.convert_to_tensor(actions, dtype= tf.float32)
-        #dones = tf.convert_to_tensor(dones, dtype= tf.bool)
-
+        # dones       = tf.convert_to_tensor(dones, dtype= tf.bool)
+        
         with tf.GradientTape() as tape1, tf.GradientTape() as tape2:
+            
+            curr_Q1s = tf.squeeze(self.critic1(states, actions), 1)
+            curr_Q2s = tf.squeeze(self.critic2(states, actions), 1)
 
-            target_actions = self.actor_target(next_states)
-            target_actions += tf.clip_by_value(tf.random.normal(shape=[*np.shape(target_actions)], mean=0.0, stddev=0.2), -0.5, 0.5)
-            target_actions = self.max_action * (tf.clip_by_value(target_actions, self.min_action, self.max_action))
+            next_P_targs = self.actor_target(next_states)
+            next_P_targs += tf.clip_by_value(tf.random.normal(shape=[*np.shape(next_P_targs)], mean=0.0, stddev=0.2), -0.5, 0.5)
+            next_P_targs = self.max_action * (tf.clip_by_value(next_P_targs, self.min_action, self.max_action))
 
-
-            target_next_state_values = tf.squeeze(self.critic_target(next_states, target_actions), 1)
-            target_next_state_values2 = tf.squeeze(self.critic_target2(next_states, target_actions), 1)
-
-            critic_value = tf.squeeze(self.critic_main(states, actions), 1)
-            critic_value2 = tf.squeeze(self.critic_main2(states, actions), 1)
-
-            next_state_target_value = tf.math.minimum(target_next_state_values, target_next_state_values2)
-
-            target_values = rewards + self.gamma * next_state_target_value * dones
-            critic_loss1 = tf.keras.losses.MSE(target_values, critic_value)
-            critic_loss2 = tf.keras.losses.MSE(target_values, critic_value2)
+            next_Q_targs = tf.squeeze(self.critic_target1(next_states, next_P_targs), 1)
+            next_Q2_targs  = tf.squeeze(self.critic_target2(next_states, next_P_targs), 1)
+            next_target_Qs = tf.math.minimum(next_Q_targs, next_Q2_targs)
+            expected_Qs    = rewards + self.gamma * next_target_Qs * dones
+            
+            critic_loss1 = tf.keras.losses.MSE(expected_Qs, curr_Q1s)
+            critic_loss2 = tf.keras.losses.MSE(expected_Qs, curr_Q2s)
           
-        grads1 = tape1.gradient(critic_loss1, self.critic_main.trainable_variables)
-        grads2 = tape2.gradient(critic_loss2, self.critic_main2.trainable_variables)
+        grads1 = tape1.gradient(critic_loss1, self.critic1.trainable_variables)
+        grads2 = tape2.gradient(critic_loss2, self.critic2.trainable_variables)
       
-        self.c_opt1.apply_gradients(zip(grads1, self.critic_main.trainable_variables))
-        self.c_opt2.apply_gradients(zip(grads2, self.critic_main2.trainable_variables))
+        self.c_opt1.apply_gradients(zip(grads1, self.critic1.trainable_variables))
+        self.c_opt2.apply_gradients(zip(grads2, self.critic2.trainable_variables))
         
         self.trainstep +=1
         
         if self.trainstep % self.actor_update_steps == 0:
             with tf.GradientTape() as tape3:
                 
-                new_policy_actions = self.actor_main(states)
-                actor_loss = -self.critic_main(states, new_policy_actions)
+                curr_Ps = self.actor(states)
+                actor_loss = -self.critic1(states, curr_Ps)
                 actor_loss = tf.math.reduce_mean(actor_loss)
           
-            grads3 = tape3.gradient(actor_loss, self.actor_main.trainable_variables)
-            self.a_opt.apply_gradients(zip(grads3, self.actor_main.trainable_variables))
+            grads3 = tape3.gradient(actor_loss, self.actor.trainable_variables)
+            self.a_opt.apply_gradients(zip(grads3, self.actor.trainable_variables))
 
-        #if self.trainstep % self.replace == 0:
-        self.update_target()
-           
-with tf.device('GPU:0'):
+        if self.trainstep % self.update_freq == 0:
+            self.update_target()
+
+seed = 1234
+# CREATING THE ENVIRONMENT
+env_name = "LunarLanderContinuous-v2"
+env = gym.make(env_name)
+env.seed(seed)     # reproducible, general Policy gradient has high variance
+state_low   = env.observation_space.low
+state_high  = env.observation_space.high
+action_low  = env.action_space.low 
+action_high = env.action_space.high
+print("state_low   :", state_low)
+print("state_high  :", state_high)
+print("action_low  :", action_low)
+print("action_high :", action_high)
+
+# INITIALIZING THE Q-PARAMETERS
+hidden_size = 512
+max_episodes = 300  # Set total number of episodes to train agent on.
+
+# train
+agent = Agent(
+    env, 
+#     memory_size, 
+#     batch_size, 
+#     epsilon_decay,
+)
+
+if __name__ == "__main__":
     tf.random.set_seed(336699)
-    agent = Agent(2)
-    episods = 20000
-    ep_reward = []
-    total_avgr = []
-    target = False
-
-    for s in range(episods):
-        if target == True:
-            break
-        total_reward = 0 
-        state = env.reset()
-        done = False
-
+    # TRAINING LOOP
+    #List to contain all the rewards of all the episodes given to the agent
+    scores = []
+    
+    # EACH EPISODE    
+    for episode in range(max_episodes):
+        ## Reset environment and get first new observation
+        state = agent.env.reset()
+        episode_reward = 0
+        done = False  # has the enviroment finished?
+        
+            
+        # EACH TIME STEP    
         while not done:
-            #env.render()
-            action = agent.act(state)
-            next_state, reward, done, _ = env.step(action)
-            agent.savexp(state, next_state, action, done, reward)
-            agent.train()
+        # for step in range(max_steps):  # step index, maximum step is 200
+            action = agent.get_action(state)
+            
+            # TAKING ACTION
+            next_state, reward, done, _ = agent.env.step(action)
+            
+            agent.savexp(state, action, reward, next_state, done)
+            agent.train_step()
+            
+            # Our new state is state
             state = next_state
-            total_reward += reward
-            if done:
-                ep_reward.append(total_reward)
-                avg_reward = np.mean(ep_reward[-100:])
-                total_avgr.append(avg_reward)
-                print("total reward after {} steps is {} and avg reward is {}".format(s, total_reward, avg_reward))
-                if int(avg_reward) == 200:
-                    target = True
+            
+            episode_reward += reward
 
-ep = [i  for i in range(len(avg_rewards_list))]
-plt.plot( range(len(avg_rewards_list)),avg_rewards_list,'b')
-plt.title("Avg Test Aeward Vs Test Episods")
-plt.xlabel("Test Episods")
-plt.ylabel("Average Test Reward")
-plt.grid(True)
-plt.show()
+            # if episode ends
+            if done:
+                scores.append(episode_reward)
+                print("Episode " + str(episode+1) + ": " + str(episode_reward))
+                
+                break
+
+
 

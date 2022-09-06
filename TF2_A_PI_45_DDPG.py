@@ -143,7 +143,7 @@ class Agent():
             actions += tf.random.normal(shape=[self.action_size], mean=0.0, stddev=0.1)
 
         actions = self.max_action * (tf.clip_by_value(actions, self.min_action, self.max_action))
-        #print(actions)
+        # print(actions)
         return actions[0]
     
     def savexp(self,state, next_state, action, done, reward):
